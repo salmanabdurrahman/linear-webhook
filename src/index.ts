@@ -2,9 +2,12 @@ import { Elysia } from "elysia";
 import { CloudflareAdapter } from "elysia/adapter/cloudflare-worker";
 import { hmacSha256Hex, normalizeSignature, timingSafeEqualHex } from "./crypto";
 import { logLinearWebhookEvent, parseLinearWebhookEvent, type LinearWebhookPayload } from "./linear";
+import { sendTelegramNotification } from "./telegram";
 
 interface Env {
   LINEAR_WEBHOOK_SECRET?: string;
+  TELEGRAM_BOT_TOKEN?: string;
+  TELEGRAM_CHAT_ID?: string;
 }
 
 const TIMESTAMP_TOLERANCE_MS = 60_000;
@@ -17,7 +20,7 @@ export const app = new Elysia({ adapter: CloudflareAdapter })
   .get("/health", () => "ok")
   .compile();
 
-export async function handleLinearWebhook(request: Request, env: Env): Promise<Response> {
+export async function handleLinearWebhook(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
   const rawBody = await request.text();
   const signature = normalizeSignature(request.headers.get("Linear-Signature"));
   const secret = env.LINEAR_WEBHOOK_SECRET;
@@ -51,6 +54,18 @@ export async function handleLinearWebhook(request: Request, env: Env): Promise<R
     return Response.json({ received: true, ignored: true });
   }
 
+  const sendNotification = sendTelegramNotification({ botToken: env.TELEGRAM_BOT_TOKEN, chatId: env.TELEGRAM_CHAT_ID }, event).catch(
+    () => {
+      console.warn("telegram notification failed");
+    },
+  );
+
+  if (ctx) {
+    ctx.waitUntil(sendNotification);
+  } else {
+    await sendNotification;
+  }
+
   return Response.json({ received: true });
 }
 
@@ -59,7 +74,7 @@ const worker = {
     const url = new URL(request.url);
 
     if (request.method === "POST" && url.pathname === "/webhooks/linear") {
-      return handleLinearWebhook(request, env);
+      return handleLinearWebhook(request, env, _ctx);
     }
 
     return app.fetch(request);

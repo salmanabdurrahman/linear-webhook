@@ -6,6 +6,11 @@ export interface LinearWebhookPayload {
   actor?: {
     name?: unknown;
   } | null;
+  data?: {
+    title?: unknown;
+    body?: unknown;
+    description?: unknown;
+  } | null;
   url?: unknown;
   webhookId?: unknown;
   webhookTimestamp?: unknown;
@@ -14,6 +19,8 @@ export interface LinearWebhookPayload {
 export interface LinearWebhookMetadata {
   type: string | null;
   action: string | null;
+  title: string | null;
+  bodyPreview: string | null;
   actorName: string | null;
   url: string | null;
   webhookId: string | null;
@@ -35,6 +42,8 @@ export function parseLinearWebhookEvent(
   const metadata: LinearWebhookMetadata = {
     type: stringOrNull(payload.type),
     action: stringOrNull(payload.action),
+    title: stringOrNull(payload.data?.title),
+    bodyPreview: previewBody(payload.data?.body ?? payload.data?.description),
     actorName: stringOrNull(payload.actor?.name),
     url: stringOrNull(payload.url),
     webhookId: stringOrNull(payload.webhookId),
@@ -49,8 +58,16 @@ export function parseLinearWebhookEvent(
 }
 
 export function logLinearWebhookEvent(event: ParsedLinearWebhookEvent): void {
+  const { type, action, actorName, url, webhookId, delivery, event: eventName } = event.metadata;
+
   console.log("linear webhook received", {
-    ...event.metadata,
+    type,
+    action,
+    actorName,
+    url,
+    webhookId,
+    delivery,
+    event: eventName,
     supported: event.supported,
   });
 }
@@ -61,4 +78,15 @@ function isSupportedLinearEvent(type: string | null): type is SupportedLinearEve
 
 function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function previewBody(value: unknown): string | null {
+  const text = stringOrNull(value);
+
+  if (!text) {
+    return null;
+  }
+
+  const normalized = text.replace(/\s+/g, " ").trim();
+  return normalized.length <= 180 ? normalized : `${normalized.slice(0, 179)}…`;
 }

@@ -1,7 +1,9 @@
-import { describe, expect, it, spyOn } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { hmacSha256Hex } from "../src/crypto";
-import app from "../src/index";
+import app, { handleLinearWebhook } from "../src/index";
 import { parseLinearWebhookEvent } from "../src/linear";
+
+const originalFetch = globalThis.fetch;
 
 describe("service routes", () => {
   it("returns service info", async () => {
@@ -26,6 +28,10 @@ describe("service routes", () => {
 
 describe("linear webhook", () => {
   const secret = "test-secret";
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("accepts a valid signed issue payload", async () => {
     const body = JSON.stringify({ webhookTimestamp: Date.now(), type: "Issue" });
@@ -82,6 +88,8 @@ describe("linear webhook", () => {
       metadata: {
         type: "Issue",
         action: "create",
+        title: null,
+        bodyPreview: null,
         actorName: "Ada Lovelace",
         url: "https://linear.app/example/issue/SAL-1",
         webhookId: "webhook-1",
@@ -120,6 +128,110 @@ describe("linear webhook", () => {
       expect(JSON.stringify(consoleLog.mock.calls)).not.toContain("do-not-log");
     } finally {
       consoleLog.mockRestore();
+    }
+  });
+
+  it("schedules Telegram notification with waitUntil in worker context", async () => {
+    let resolveFetch: (response: Response) => void = () => undefined;
+    let waitUntilPromise: Promise<unknown> | undefined;
+    globalThis.fetch = (() => new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    })) as unknown as typeof fetch;
+
+    const body = JSON.stringify({ webhookTimestamp: Date.now(), type: "Issue" });
+    const request = new Request("http://localhost/webhooks/linear", {
+      method: "POST",
+      headers: { "Linear-Signature": await hmacSha256Hex(secret, body) },
+      body,
+    });
+    const response = await handleLinearWebhook(request, {
+      LINEAR_WEBHOOK_SECRET: secret,
+      TELEGRAM_BOT_TOKEN: "telegram-token",
+      TELEGRAM_CHAT_ID: "chat-1",
+    }, {
+      waitUntil(promise: Promise<unknown>) {
+        waitUntilPromise = promise;
+      },
+      passThroughOnException() {},
+    } as ExecutionContext);
+
+    expect(response.status).toBe(200);
+    expect(waitUntilPromise).toBeDefined();
+    resolveFetch(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    await waitUntilPromise;
+  });
+
+  it("sends Telegram notification for valid issue payload", async () => {
+    const fetchCalls: RequestInfo[] = [];
+    globalThis.fetch = ((input: RequestInfo | URL) => {
+      fetchCalls.push(input as RequestInfo);
+      return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    }) as typeof fetch;
+
+    const body = JSON.stringify({
+      webhookTimestamp: Date.now(),
+      type: "Issue",
+      action: "create",
+      actor: { name: "Ada Lovelace" },
+      data: { title: "Fix bug", body: "Long body" },
+      url: "https://linear.app/example/issue/SAL-1",
+    });
+    const response = await postLinearWebhook(body, await hmacSha256Hex(secret, body), {
+      "Linear-Delivery": "delivery-6",
+      "Linear-Event": "Issue",
+    }, {
+      TELEGRAM_BOT_TOKEN: "telegram-token",
+      TELEGRAM_CHAT_ID: "chat-1",
+    });
+
+    expect(response.status).toBe(200);
+    const telegramUrl = new URL(String(fetchCalls[0]));
+    expect(telegramUrl.origin).toBe("https://api.telegram.org");
+    expect(telegramUrl.pathname.endsWith("/sendMessage")).toBe(true);
+  });
+
+  it("sends Telegram notification for valid comment payload", async () => {
+    let requestBody = "";
+    globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
+      requestBody = String(init?.body);
+      return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    }) as typeof fetch;
+
+    const body = JSON.stringify({
+      webhookTimestamp: Date.now(),
+      type: "Comment",
+      action: "create",
+      actor: { name: "Grace Hopper" },
+      data: { body: "Comment body" },
+      url: "https://linear.app/example/comment/1",
+    });
+    const response = await postLinearWebhook(body, await hmacSha256Hex(secret, body), {
+      "Linear-Delivery": "delivery-7",
+      "Linear-Event": "Comment",
+    }, {
+      TELEGRAM_BOT_TOKEN: "telegram-token",
+      TELEGRAM_CHAT_ID: "chat-1",
+    });
+
+    expect(response.status).toBe(200);
+    expect(requestBody).toContain("Comment body");
+    expect(requestBody).toContain("delivery-7");
+  });
+
+  it("accepts valid event when Telegram config is missing", async () => {
+    const consoleWarn = spyOn(console, "warn").mockImplementation(() => undefined);
+    const body = JSON.stringify({ webhookTimestamp: Date.now(), type: "Issue" });
+
+    try {
+      const response = await postLinearWebhook(body, await hmacSha256Hex(secret, body));
+
+      expect(response.status).toBe(200);
+      expect(consoleWarn).toHaveBeenCalledWith("telegram notification skipped: missing config", {
+        missingConfig: ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"],
+      });
+      expect(JSON.stringify(consoleWarn.mock.calls)).not.toContain("telegram-token");
+    } finally {
+      consoleWarn.mockRestore();
     }
   });
 
@@ -194,6 +306,7 @@ describe("linear webhook", () => {
     body: string,
     signature: string,
     headers: Record<string, string> = {},
+    env: Record<string, string> = {},
   ): Promise<Response> {
     return app.fetch(
       new Request("http://localhost/webhooks/linear", {
@@ -201,7 +314,7 @@ describe("linear webhook", () => {
         headers: { "Linear-Signature": signature, ...headers },
         body,
       }),
-      { LINEAR_WEBHOOK_SECRET: secret },
+      { LINEAR_WEBHOOK_SECRET: secret, ...env },
     );
   }
 });
