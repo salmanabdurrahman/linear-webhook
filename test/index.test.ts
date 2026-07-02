@@ -5,6 +5,16 @@ import { parseLinearWebhookEvent } from "../src/linear";
 
 const originalFetch = globalThis.fetch;
 
+describe("wrangler config", () => {
+  it("uses a supported compatibility date", async () => {
+    const config = (await Bun.file("wrangler.jsonc").json()) as { compatibility_date: string };
+    const today = new Date().toISOString().slice(0, 10);
+
+    expect(config.compatibility_date).toBe("2026-07-02");
+    expect(config.compatibility_date <= today).toBe(true);
+  });
+});
+
 describe("service routes", () => {
   it("returns service info", async () => {
     const response = await app.fetch(new Request("http://localhost/"));

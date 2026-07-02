@@ -83,6 +83,8 @@ Start local Worker:
 bun run dev
 ```
 
+Wrangler rejects future compatibility dates. Keep `compatibility_date` in `wrangler.jsonc` on or before Wrangler's supported date; this project currently pins `2026-07-02`.
+
 Default local URL:
 
 ```txt
