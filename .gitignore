@@ -1,0 +1,22 @@
+# Ignore node_modules directory
+node_modules/
+
+# Local env/secrets
+.dev.vars
+.env
+.env.*
+!.env.example
+
+# Cloudflare Workers / Wrangler
+.wrangler/
+.worker/
+dist/
+
+# Logs
+*.log
+
+# OS/editor
+.DS_Store
+
+# PI files
+.pi/
