@@ -83,6 +83,6 @@ const worker = {
 
 export default worker;
 
-function isTimestampFresh(timestamp: unknown, now: number): boolean {
+export function isTimestampFresh(timestamp: unknown, now: number): boolean {
   return typeof timestamp === "number" && Math.abs(now - timestamp) <= TIMESTAMP_TOLERANCE_MS;
 }

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
-import { hmacSha256Hex } from "../src/crypto";
-import app, { handleLinearWebhook } from "../src/index";
+import { hmacSha256Hex, normalizeSignature, timingSafeEqualHex } from "../src/crypto";
+import app, { handleLinearWebhook, isTimestampFresh } from "../src/index";
 import { parseLinearWebhookEvent } from "../src/linear";
 
 const originalFetch = globalThis.fetch;
@@ -23,6 +23,35 @@ describe("service routes", () => {
 
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("ok");
+  });
+});
+
+describe("crypto helpers", () => {
+  it("creates and compares a valid signature", async () => {
+    const body = JSON.stringify({ webhookTimestamp: 1, type: "Issue" });
+    const signature = await hmacSha256Hex("test-secret", body);
+
+    expect(timingSafeEqualHex(signature, signature)).toBe(true);
+    expect(normalizeSignature(`sha256=${signature}`)).toBe(signature);
+  });
+
+  it("rejects an invalid signature", async () => {
+    const body = JSON.stringify({ webhookTimestamp: 1, type: "Issue" });
+    const signature = await hmacSha256Hex("test-secret", body);
+
+    expect(timingSafeEqualHex("00".repeat(32), signature)).toBe(false);
+  });
+
+  it("accepts timestamps within tolerance", () => {
+    expect(isTimestampFresh(1_000, 61_000)).toBe(true);
+  });
+
+  it("rejects expired timestamps", () => {
+    expect(isTimestampFresh(999, 61_000)).toBe(false);
+  });
+
+  it("rejects future timestamps outside tolerance", () => {
+    expect(isTimestampFresh(121_001, 61_000)).toBe(false);
   });
 });
 
@@ -218,6 +247,26 @@ describe("linear webhook", () => {
     expect(requestBody).toContain("delivery-7");
   });
 
+  it("does not leak secrets when Telegram request fails", async () => {
+    const consoleWarn = spyOn(console, "warn").mockImplementation(() => undefined);
+    globalThis.fetch = (() => Promise.resolve(new Response(JSON.stringify({ ok: false }), { status: 401 }))) as unknown as typeof fetch;
+    const body = JSON.stringify({ webhookTimestamp: Date.now(), type: "Issue" });
+
+    try {
+      const response = await postLinearWebhook(body, await hmacSha256Hex(secret, body), {}, {
+        TELEGRAM_BOT_TOKEN: "telegram-token",
+        TELEGRAM_CHAT_ID: "chat-1",
+      });
+
+      expect(response.status).toBe(200);
+      expect(consoleWarn).toHaveBeenCalledWith("telegram notification failed", { status: 401 });
+      expect(JSON.stringify(consoleWarn.mock.calls)).not.toContain("telegram-token");
+      expect(JSON.stringify(consoleWarn.mock.calls)).not.toContain("chat-1");
+    } finally {
+      consoleWarn.mockRestore();
+    }
+  });
+
   it("accepts valid event when Telegram config is missing", async () => {
     const consoleWarn = spyOn(console, "warn").mockImplementation(() => undefined);
     const body = JSON.stringify({ webhookTimestamp: Date.now(), type: "Issue" });
@@ -264,6 +313,13 @@ describe("linear webhook", () => {
         body,
       }),
     );
+
+    expect(response.status).toBe(401);
+  });
+
+  it("rejects a future webhook timestamp", async () => {
+    const body = JSON.stringify({ webhookTimestamp: Date.now() + 61_000, type: "Issue" });
+    const response = await postLinearWebhook(body, await hmacSha256Hex(secret, body));
 
     expect(response.status).toBe(401);
   });
