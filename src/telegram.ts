@@ -45,33 +45,119 @@ export async function sendTelegramNotification(
 
 export function formatTelegramMessage(event: ParsedLinearWebhookEvent): string {
   const { metadata } = event;
-  const lines = [
-    "Linear webhook event",
-    `Type: ${metadata.type ?? "unknown"}`,
-    `Action: ${metadata.action ?? "unknown"}`,
-  ];
+  const lines = [formatHeading(event)];
+  const title = metadata.issueTitle ?? metadata.title;
 
-  if (metadata.title) {
-    lines.push(`Title: ${metadata.title}`);
+  if (title) {
+    lines.push(title);
   }
 
-  if (metadata.bodyPreview) {
-    lines.push(`Body: ${metadata.bodyPreview}`);
-  }
+  if (metadata.type === "Comment") {
+    addBlankLine(lines);
 
-  if (metadata.actorName) {
-    lines.push(`Actor: ${metadata.actorName}`);
+    if (metadata.bodyPreview) {
+      lines.push(metadata.bodyPreview);
+    }
+  } else if (metadata.type === "Issue" && metadata.action === "update") {
+    addBlankLine(lines);
+
+    if (metadata.actorName) {
+      lines.push(`By ${metadata.actorName}`);
+    }
+
+    if (metadata.changedFields.length > 0) {
+      lines.push(`Changed: ${metadata.changedFields.join(", ")}`);
+    } else if (metadata.bodyPreview) {
+      lines.push(`Preview: ${metadata.bodyPreview}`);
+    }
+  } else {
+    addBlankLine(lines);
+
+    if (metadata.actorName) {
+      lines.push(`By ${metadata.actorName}`);
+    }
+
+    const details = formatIssueDetails(event);
+    if (details.length > 0) {
+      lines.push(`Details: ${details.join(", ")}`);
+    }
+
+    if (metadata.bodyPreview) {
+      lines.push(metadata.bodyPreview);
+    }
   }
 
   if (metadata.url) {
-    lines.push(`URL: ${metadata.url}`);
+    addBlankLine(lines);
+    lines.push(`Open: ${metadata.url}`);
   }
 
-  if (metadata.delivery) {
-    lines.push(`Delivery: ${metadata.delivery}`);
+  return trimBlankLines(lines).join("\n");
+}
+
+function formatHeading(event: ParsedLinearWebhookEvent): string {
+  const { metadata } = event;
+  const issueLabel = metadata.issueIdentifier ?? metadata.issueTitle ?? "Linear issue";
+
+  if (metadata.type === "Comment") {
+    const actor = metadata.actorName ?? "Someone";
+    return `💬 ${actor} commented on ${issueLabel}`;
   }
 
-  return lines.join("\n");
+  if (metadata.type === "Issue") {
+    if (metadata.action === "update") {
+      return `📝 ${issueLabel} updated`;
+    }
+
+    if (metadata.action === "create") {
+      return `✨ ${issueLabel} created`;
+    }
+
+    return `📝 ${issueLabel}`;
+  }
+
+  return "Linear webhook event";
+}
+
+function formatIssueDetails(event: ParsedLinearWebhookEvent): string[] {
+  const { metadata } = event;
+  const details: string[] = [];
+
+  if (metadata.state) {
+    details.push(`state ${metadata.state}`);
+  }
+
+  if (metadata.assignee) {
+    details.push(`assignee ${metadata.assignee}`);
+  }
+
+  if (metadata.priority) {
+    details.push(`priority ${metadata.priority}`);
+  }
+
+  if (metadata.labels.length > 0) {
+    details.push(`labels ${metadata.labels.join(", ")}`);
+  }
+
+  if (metadata.team) {
+    details.push(`team ${metadata.team}`);
+  }
+
+  return details;
+}
+
+function addBlankLine(lines: string[]): void {
+  if (lines[lines.length - 1] !== "") {
+    lines.push("");
+  }
+}
+
+function trimBlankLines(lines: string[]): string[] {
+  while (lines[lines.length - 1] === "") {
+    lines.pop();
+  }
+
+  return lines;
 }
 
 function getMissingTelegramConfig(config: TelegramConfig): string[] {

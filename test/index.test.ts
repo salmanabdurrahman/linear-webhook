@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { hmacSha256Hex, normalizeSignature, timingSafeEqualHex } from "../src/crypto";
 import app, { handleLinearWebhook, isTimestampFresh } from "../src/index";
 import { parseLinearWebhookEvent } from "../src/linear";
+import { formatTelegramMessage } from "../src/telegram";
 
 const originalFetch = globalThis.fetch;
 
@@ -145,10 +146,18 @@ describe("linear webhook", () => {
       metadata: {
         type: "Issue",
         action: "create",
+        issueIdentifier: null,
+        issueTitle: null,
         title: null,
         bodyPreview: null,
         actorName: "Ada Lovelace",
         url: "https://linear.app/example/issue/SAL-1",
+        changedFields: [],
+        state: null,
+        assignee: null,
+        priority: null,
+        labels: [],
+        team: null,
         webhookId: "webhook-1",
         delivery: "delivery-4",
         event: "Issue",
@@ -175,8 +184,16 @@ describe("linear webhook", () => {
       expect(consoleLog).toHaveBeenCalledWith("linear webhook received", {
         type: "Issue",
         action: "create",
+        issueIdentifier: null,
+        issueTitle: null,
         actorName: null,
         url: null,
+        changedFields: [],
+        state: null,
+        assignee: null,
+        priority: null,
+        labels: [],
+        team: null,
         webhookId: null,
         delivery: "delivery-5",
         event: "Issue",
@@ -369,7 +386,137 @@ describe("linear webhook", () => {
 
     expect(response.status).toBe(200);
     expect(requestBody).toContain("Comment body");
-    expect(requestBody).toContain("delivery-7");
+    expect(requestBody).toContain("💬 Grace Hopper commented on Linear issue");
+    expect(requestBody).not.toContain("Type:");
+    expect(requestBody).not.toContain("Action:");
+    expect(requestBody).not.toContain("Delivery:");
+    expect(requestBody).not.toContain("delivery-7");
+  });
+
+  it("keeps malformed optional Linear metadata null-safe", () => {
+    const event = parseLinearWebhookEvent({
+      type: "Issue",
+      action: "update",
+      data: {
+        title: "Safe parse",
+        labels: [null, "bug", { name: "safe" }] as unknown as [{ name?: unknown }],
+      },
+    }, new Headers());
+
+    expect(event.metadata.labels).toEqual(["bug", "safe"]);
+  });
+
+  it("extracts rich Linear issue metadata", () => {
+    const event = parseLinearWebhookEvent({
+      type: "Issue",
+      action: "create",
+      actor: { name: "Ada Lovelace" },
+      data: {
+        identifier: "SAL-13",
+        title: "Improve reports",
+        state: { name: "In Progress" },
+        assignee: { name: "Grace Hopper" },
+        priorityLabel: "High",
+        labels: { nodes: [{ name: "notifications" }] },
+        team: { name: "Product" },
+      },
+    }, new Headers());
+
+    expect(event.metadata).toMatchObject({
+      issueIdentifier: "SAL-13",
+      issueTitle: "Improve reports",
+      actorName: "Ada Lovelace",
+      state: "In Progress",
+      assignee: "Grace Hopper",
+      priority: "High",
+      labels: ["notifications"],
+      team: "Product",
+    });
+  });
+
+  it("extracts issue metadata from comment payloads", () => {
+    const event = parseLinearWebhookEvent({
+      type: "Comment",
+      action: "create",
+      actor: { name: "Grace Hopper" },
+      data: {
+        body: "Implemented locally.\n\n- Added templates",
+        issue: {
+          identifier: "SAL-13",
+          title: "Improve reports",
+          url: "https://linear.app/example/issue/SAL-13",
+        },
+      },
+    }, new Headers());
+
+    expect(event.metadata.issueIdentifier).toBe("SAL-13");
+    expect(event.metadata.issueTitle).toBe("Improve reports");
+    expect(event.metadata.bodyPreview).toBe("Implemented locally. - Added templates");
+    expect(event.metadata.url).toBe("https://linear.app/example/issue/SAL-13");
+  });
+
+  it("formats compact comment notifications", () => {
+    const event = parseLinearWebhookEvent({
+      type: "Comment",
+      action: "create",
+      actor: { name: "Grace Hopper" },
+      data: {
+        body: "Implemented locally.",
+        issue: { identifier: "SAL-13", title: "Improve reports" },
+      },
+      url: "https://linear.app/example/comment/1",
+    }, new Headers());
+
+    expect(formatTelegramMessage(event)).toBe([
+      "💬 Grace Hopper commented on SAL-13",
+      "Improve reports",
+      "",
+      "Implemented locally.",
+      "",
+      "Open: https://linear.app/example/comment/1",
+    ].join("\n"));
+  });
+
+  it("formats compact issue update notifications with changed fields", () => {
+    const event = parseLinearWebhookEvent({
+      type: "Issue",
+      action: "update",
+      actor: { name: "Ada Lovelace" },
+      data: {
+        identifier: "SAL-13",
+        title: "Improve reports",
+        description: "Long PRD content should not appear when changed fields exist",
+      },
+      updatedFrom: { description: "old", state: { name: "Todo" } },
+      url: "https://linear.app/example/issue/SAL-13",
+    }, new Headers());
+
+    const message = formatTelegramMessage(event);
+
+    expect(message).toBe([
+      "📝 SAL-13 updated",
+      "Improve reports",
+      "",
+      "By Ada Lovelace",
+      "Changed: description, state",
+      "",
+      "Open: https://linear.app/example/issue/SAL-13",
+    ].join("\n"));
+    expect(message).not.toContain("Long PRD content");
+  });
+
+  it("uses issue update preview only when changed fields are missing", () => {
+    const event = parseLinearWebhookEvent({
+      type: "Issue",
+      action: "update",
+      data: {
+        identifier: "SAL-13",
+        title: "Improve reports",
+        description: "Short fallback description",
+      },
+    }, new Headers());
+
+    expect(formatTelegramMessage(event)).toContain("Preview: Short fallback description");
   });
 
   it("does not leak secrets when Telegram request fails", async () => {

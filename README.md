@@ -36,6 +36,7 @@ Unsupported event types are acknowledged with `200` and marked as ignored to pre
 - Telegram notification delivery via Bot API
 - Cloudflare Queue delivery retries for Telegram failures
 - KV-backed idempotency guard using `Linear-Delivery` or `webhookId`
+- Human-readable Telegram notifications for issue/comment events without debug-only fields
 - Safe logging without raw payload or secret values
 - Local signed payload generator for manual testing
 - Unit/integration tests with Bun
