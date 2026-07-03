@@ -13,6 +13,9 @@ export interface TelegramSendResult {
 
 const TELEGRAM_API_BASE_URL = "https://api.telegram.org";
 const MAX_PREVIEW_LENGTH = 180;
+const MAX_FIELD_LENGTH = 240;
+const MAX_URL_LENGTH = 500;
+const MAX_MESSAGE_LENGTH = 3_900;
 
 export async function sendTelegramNotification(
   config: TelegramConfig,
@@ -49,7 +52,7 @@ export function formatTelegramMessage(event: ParsedLinearWebhookEvent): string {
   const title = metadata.issueTitle ?? metadata.title;
 
   if (title) {
-    lines.push(title);
+    lines.push(truncateText(title, MAX_FIELD_LENGTH));
   }
 
   if (metadata.type === "Comment") {
@@ -62,11 +65,11 @@ export function formatTelegramMessage(event: ParsedLinearWebhookEvent): string {
     addBlankLine(lines);
 
     if (metadata.actorName) {
-      lines.push(`By ${metadata.actorName}`);
+      lines.push(truncateText(`By ${metadata.actorName}`, MAX_FIELD_LENGTH));
     }
 
     if (metadata.changedFields.length > 0) {
-      lines.push(`Changed: ${metadata.changedFields.join(", ")}`);
+      lines.push(truncateText(`Changed: ${metadata.changedFields.join(", ")}`, MAX_FIELD_LENGTH));
     } else if (metadata.bodyPreview) {
       lines.push(`Preview: ${metadata.bodyPreview}`);
     }
@@ -74,12 +77,12 @@ export function formatTelegramMessage(event: ParsedLinearWebhookEvent): string {
     addBlankLine(lines);
 
     if (metadata.actorName) {
-      lines.push(`By ${metadata.actorName}`);
+      lines.push(truncateText(`By ${metadata.actorName}`, MAX_FIELD_LENGTH));
     }
 
     const details = formatIssueDetails(event);
     if (details.length > 0) {
-      lines.push(`Details: ${details.join(", ")}`);
+      lines.push(truncateText(`Details: ${details.join(", ")}`, MAX_FIELD_LENGTH));
     }
 
     if (metadata.bodyPreview) {
@@ -89,10 +92,10 @@ export function formatTelegramMessage(event: ParsedLinearWebhookEvent): string {
 
   if (metadata.url) {
     addBlankLine(lines);
-    lines.push(`Open: ${metadata.url}`);
+    lines.push(`Open: ${truncateText(metadata.url, MAX_URL_LENGTH)}`);
   }
 
-  return trimBlankLines(lines).join("\n");
+  return truncateText(trimBlankLines(lines).join("\n"), MAX_MESSAGE_LENGTH);
 }
 
 function formatHeading(event: ParsedLinearWebhookEvent): string {
@@ -101,19 +104,19 @@ function formatHeading(event: ParsedLinearWebhookEvent): string {
 
   if (metadata.type === "Comment") {
     const actor = metadata.actorName ?? "Someone";
-    return `💬 ${actor} commented on ${issueLabel}`;
+    return truncateText(`💬 ${actor} commented on ${issueLabel}`, MAX_FIELD_LENGTH);
   }
 
   if (metadata.type === "Issue") {
     if (metadata.action === "update") {
-      return `📝 ${issueLabel} updated`;
+      return truncateText(`📝 ${issueLabel} updated`, MAX_FIELD_LENGTH);
     }
 
     if (metadata.action === "create") {
-      return `✨ ${issueLabel} created`;
+      return truncateText(`✨ ${issueLabel} created`, MAX_FIELD_LENGTH);
     }
 
-    return `📝 ${issueLabel}`;
+    return truncateText(`📝 ${issueLabel}`, MAX_FIELD_LENGTH);
   }
 
   return "Linear webhook event";
@@ -143,7 +146,7 @@ function formatIssueDetails(event: ParsedLinearWebhookEvent): string[] {
     details.push(`team ${metadata.team}`);
   }
 
-  return details;
+  return details.map((detail) => truncateText(detail, MAX_FIELD_LENGTH));
 }
 
 function addBlankLine(lines: string[]): void {
@@ -181,9 +184,17 @@ export function previewText(value: unknown): string | null {
 
   const normalized = value.replace(/\s+/g, " ").trim();
 
-  if (normalized.length <= MAX_PREVIEW_LENGTH) {
-    return normalized;
+  if (normalized.length === 0) {
+    return null;
   }
 
-  return `${normalized.slice(0, MAX_PREVIEW_LENGTH - 1)}…`;
+  return truncateText(normalized, MAX_PREVIEW_LENGTH);
+}
+
+function truncateText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  return `${value.slice(0, maxLength - 1)}…`;
 }

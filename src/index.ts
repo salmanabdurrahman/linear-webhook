@@ -54,7 +54,7 @@ export async function handleLinearWebhook(request: Request, env: Env, ctx?: Exec
     return new Response("invalid payload", { status: 400 });
   }
 
-  if (!isTimestampFresh(payload.webhookTimestamp, Date.now())) {
+  if (!isTimestampFresh(webhookTimestamp(payload, request.headers), Date.now())) {
     return new Response("expired timestamp", { status: 401 });
   }
 
@@ -128,4 +128,19 @@ export default worker;
 
 export function isTimestampFresh(timestamp: unknown, now: number): boolean {
   return typeof timestamp === "number" && Math.abs(now - timestamp) <= TIMESTAMP_TOLERANCE_MS;
+}
+
+export function webhookTimestamp(payload: LinearWebhookPayload, headers: Headers): number | null {
+  return typeof payload.webhookTimestamp === "number" ? payload.webhookTimestamp : timestampFromHeader(headers);
+}
+
+export function timestampFromHeader(headers: Headers): number | null {
+  const timestamp = headers.get("Linear-Timestamp");
+
+  if (!timestamp) {
+    return null;
+  }
+
+  const parsed = Number(timestamp);
+  return Number.isFinite(parsed) ? parsed : null;
 }

@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { hmacSha256Hex, normalizeSignature, timingSafeEqualHex } from "../src/crypto";
-import app, { handleLinearWebhook, isTimestampFresh } from "../src/index";
+import app, { handleLinearWebhook, isTimestampFresh, timestampFromHeader, webhookTimestamp } from "../src/index";
 import { parseLinearWebhookEvent } from "../src/linear";
 import { formatTelegramMessage } from "../src/telegram";
 
 const originalFetch = globalThis.fetch;
 
 type KvStore = Pick<KVNamespace, "get" | "put" | "delete">;
+type StoredDeliveryStatus = "queued" | "sent" | "failed";
 
 function createMemoryKv(initial: Record<string, string> = {}): KVNamespace {
   const values = new Map(Object.entries(initial));
@@ -22,6 +23,18 @@ function createMemoryKv(initial: Record<string, string> = {}): KVNamespace {
       return Promise.resolve();
     },
   } as KvStore as KVNamespace;
+}
+
+function deliveryStatus(value: string | null): StoredDeliveryStatus | null {
+  if (!value) {
+    return null;
+  }
+
+  if (value === "queued" || value === "sent" || value === "failed") {
+    return value;
+  }
+
+  return (JSON.parse(value) as { status: StoredDeliveryStatus }).status;
 }
 
 describe("wrangler config", () => {
@@ -81,6 +94,14 @@ describe("crypto helpers", () => {
 
   it("rejects future timestamps outside tolerance", () => {
     expect(isTimestampFresh(121_001, 61_000)).toBe(false);
+  });
+
+  it("reads Linear-Timestamp header fallback", () => {
+    const headers = new Headers({ "Linear-Timestamp": "61000" });
+
+    expect(timestampFromHeader(headers)).toBe(61_000);
+    expect(webhookTimestamp({ webhookTimestamp: "bad" }, headers)).toBe(61_000);
+    expect(timestampFromHeader(new Headers({ "Linear-Timestamp": "not-a-number" }))).toBeNull();
   });
 });
 
@@ -256,7 +277,7 @@ describe("linear webhook", () => {
     expect(response.status).toBe(200);
     expect((await response.json()) as Record<string, boolean>).toEqual({ received: true, queued: true });
     expect(sentJobs).toHaveLength(1);
-    expect(await store.get("delivery-queued")).toBe("queued");
+    expect(deliveryStatus(await store.get("delivery-queued"))).toBe("queued");
   });
 
   it("records sent deliveries without queue binding", async () => {
@@ -270,7 +291,7 @@ describe("linear webhook", () => {
     });
 
     expect(response.status).toBe(200);
-    expect(await store.get("webhook-direct")).toBe("sent");
+    expect(deliveryStatus(await store.get("webhook-direct"))).toBe("sent");
   });
 
   it("skips duplicate deliveries before enqueue", async () => {
@@ -292,7 +313,7 @@ describe("linear webhook", () => {
     expect((await response.json()) as Record<string, boolean>).toEqual({ received: true, duplicate: true });
   });
 
-  it("uses webhook ids for duplicate detection when Linear-Delivery is missing", async () => {
+  it("uses webhook ids for fresh queued duplicate detection when Linear-Delivery is missing", async () => {
     const queue = {
       send: () => {
         throw new Error("should not enqueue duplicate");
@@ -301,11 +322,57 @@ describe("linear webhook", () => {
     const body = JSON.stringify({ webhookTimestamp: Date.now(), type: "Issue", webhookId: "webhook-duplicate" });
     const response = await postLinearWebhook(body, await hmacSha256Hex(secret, body), {}, {
       NOTIFICATION_QUEUE: queue,
-      PROCESSED_DELIVERIES: createMemoryKv({ "webhook-duplicate": "queued" }),
+      PROCESSED_DELIVERIES: createMemoryKv({ "webhook-duplicate": JSON.stringify({ status: "queued", updatedAt: Date.now() }) }),
     });
 
     expect(response.status).toBe(200);
     expect((await response.json()) as Record<string, boolean>).toEqual({ received: true, duplicate: true });
+  });
+
+  it("allows replay for legacy queued deliveries after upgrade", async () => {
+    const sentJobs: unknown[] = [];
+    const queue = {
+      send: (job: unknown) => {
+        sentJobs.push(job);
+        return Promise.resolve();
+      },
+    } as unknown as Queue;
+    const deliveryId = "delivery-legacy-queued";
+    const body = JSON.stringify({ webhookTimestamp: Date.now(), type: "Issue" });
+    const response = await postLinearWebhook(body, await hmacSha256Hex(secret, body), {
+      "Linear-Delivery": deliveryId,
+      "Linear-Event": "Issue",
+    }, {
+      NOTIFICATION_QUEUE: queue,
+      PROCESSED_DELIVERIES: createMemoryKv({ [deliveryId]: "queued" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()) as Record<string, boolean>).toEqual({ received: true, queued: true });
+    expect(sentJobs).toHaveLength(1);
+  });
+
+  it("allows replay when a delivery is stuck in queued state", async () => {
+    const sentJobs: unknown[] = [];
+    const queue = {
+      send: (job: unknown) => {
+        sentJobs.push(job);
+        return Promise.resolve();
+      },
+    } as unknown as Queue;
+    const deliveryId = "delivery-stale-queued";
+    const body = JSON.stringify({ webhookTimestamp: Date.now(), type: "Issue" });
+    const response = await postLinearWebhook(body, await hmacSha256Hex(secret, body), {
+      "Linear-Delivery": deliveryId,
+      "Linear-Event": "Issue",
+    }, {
+      NOTIFICATION_QUEUE: queue,
+      PROCESSED_DELIVERIES: createMemoryKv({ [deliveryId]: JSON.stringify({ status: "queued", updatedAt: Date.now() - 301_000 }) }),
+    });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()) as Record<string, boolean>).toEqual({ received: true, queued: true });
+    expect(sentJobs).toHaveLength(1);
   });
 
   it("retries queue consumer failures without leaking Telegram config", async () => {
@@ -327,6 +394,42 @@ describe("linear webhook", () => {
       })).rejects.toThrow("telegram notification failed");
       expect(JSON.stringify(consoleWarn.mock.calls)).not.toContain("telegram-token");
       expect(JSON.stringify(consoleWarn.mock.calls)).not.toContain("chat-1");
+    } finally {
+      consoleWarn.mockRestore();
+    }
+  });
+
+  it("accepts Linear-Timestamp header when payload timestamp is missing or malformed", async () => {
+    const body = JSON.stringify({ type: "Issue", webhookTimestamp: "bad" });
+    const response = await postLinearWebhook(body, await hmacSha256Hex(secret, body), {
+      "Linear-Timestamp": String(Date.now()),
+      "Linear-Delivery": "delivery-header-timestamp",
+      "Linear-Event": "Issue",
+    });
+
+    expect(response.status).toBe(200);
+  });
+
+  it("records queue consumer failures for replay and alerting", async () => {
+    const consoleWarn = spyOn(console, "warn").mockImplementation(() => undefined);
+    globalThis.fetch = (() => Promise.resolve(new Response(JSON.stringify({ ok: false }), { status: 500 }))) as unknown as typeof fetch;
+    const store = createMemoryKv({ "delivery-retry": JSON.stringify({ status: "failed", updatedAt: Date.now(), attempts: 2 }) });
+    const message = {
+      body: {
+        deliveryId: "delivery-retry",
+        event: parseLinearWebhookEvent({ type: "Issue", webhookTimestamp: Date.now() }, new Headers()),
+      },
+      ack() {},
+    };
+
+    try {
+      await expect(app.queue({ messages: [message] } as unknown as MessageBatch<never>, {
+        TELEGRAM_BOT_TOKEN: "telegram-token",
+        TELEGRAM_CHAT_ID: "chat-1",
+        PROCESSED_DELIVERIES: store,
+      })).rejects.toThrow("telegram notification failed");
+      expect(deliveryStatus(await store.get("delivery-retry"))).toBe("failed");
+      expect(consoleWarn).toHaveBeenCalledWith("notification delivery repeatedly failed", { deliveryId: "delivery-retry", attempts: 3 });
     } finally {
       consoleWarn.mockRestore();
     }
@@ -477,6 +580,36 @@ describe("linear webhook", () => {
     ].join("\n"));
   });
 
+  it("formats compact issue create notifications", () => {
+    const event = parseLinearWebhookEvent({
+      type: "Issue",
+      action: "create",
+      actor: { name: "Ada Lovelace" },
+      data: {
+        identifier: "SAL-13",
+        title: "Improve reports",
+        state: { name: "Todo" },
+        assignee: { name: "Grace Hopper" },
+        priorityLabel: "Medium",
+        labels: { nodes: [{ name: "notifications" }] },
+        team: { name: "Product" },
+        description: "Initial implementation plan.",
+      },
+      url: "https://linear.app/example/issue/SAL-13",
+    }, new Headers());
+
+    expect(formatTelegramMessage(event)).toBe([
+      "✨ SAL-13 created",
+      "Improve reports",
+      "",
+      "By Ada Lovelace",
+      "Details: state Todo, assignee Grace Hopper, priority Medium, labels notifications, team Product",
+      "Initial implementation plan.",
+      "",
+      "Open: https://linear.app/example/issue/SAL-13",
+    ].join("\n"));
+  });
+
   it("formats compact issue update notifications with changed fields", () => {
     const event = parseLinearWebhookEvent({
       type: "Issue",
@@ -503,6 +636,30 @@ describe("linear webhook", () => {
       "Open: https://linear.app/example/issue/SAL-13",
     ].join("\n"));
     expect(message).not.toContain("Long PRD content");
+  });
+
+  it("limits long Telegram fields and whole message deterministically", () => {
+    const longTitle = "T".repeat(600);
+    const longBody = "B".repeat(5_000);
+    const event = parseLinearWebhookEvent({
+      type: "Issue",
+      action: "create",
+      actor: { name: "A".repeat(600) },
+      data: {
+        identifier: "SAL-13",
+        title: longTitle,
+        description: longBody,
+        labels: { nodes: [{ name: "L".repeat(600) }] },
+      },
+      url: `https://linear.app/example/issue/SAL-13/${"u".repeat(600)}`,
+    }, new Headers());
+
+    const message = formatTelegramMessage(event);
+
+    expect(message.length).toBeLessThanOrEqual(3_900);
+    expect(message).toContain(`${"T".repeat(239)}…`);
+    expect(message).toContain(`${"B".repeat(179)}…`);
+    expect(message).toContain("…");
   });
 
   it("uses issue update preview only when changed fields are missing", () => {

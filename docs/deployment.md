@@ -208,7 +208,7 @@ Send a Linear test webhook and verify:
 
 1. Worker receives `POST /webhooks/linear`.
 2. Worker validates `Linear-Signature` with raw body.
-3. Worker validates `webhookTimestamp` freshness.
+3. Worker validates timestamp freshness from payload `webhookTimestamp`, falling back to `Linear-Timestamp` header.
 4. Worker extracts safe metadata only.
 5. Worker checks KV using `Linear-Delivery`, fallback `webhookId`.
 6. Worker enqueues notification job.
@@ -224,9 +224,12 @@ Send a Linear test webhook and verify:
 ### Idempotency behavior
 
 - KV key: `Linear-Delivery` when present, else payload `webhookId`.
-- KV values: `queued` or `sent`.
+- KV values: JSON records with `queued`, `sent`, or `failed` status, timestamp, and retry attempts when relevant.
 - TTL: 7 days.
-- Duplicate keys return `{ "received": true, "duplicate": true }` and skip Telegram delivery.
+- `sent` deliveries always return `{ "received": true, "duplicate": true }` and skip Telegram delivery.
+- Fresh `queued` deliveries are treated as duplicates. `queued` deliveries older than 5 minutes are allowed to enqueue again for safe manual replay/recovery.
+- Failed Queue consumer deliveries are marked `failed`, so manual replay can enqueue again. After 3 failures, logs include `notification delivery repeatedly failed` with delivery ID and attempt count.
+- KV `get`/`put` is not atomic. Concurrent identical deliveries can still race. For strict exactly-once delivery, move idempotency to Durable Objects, D1 unique keys, or another atomic coordinator.
 
 ### Logging
 
@@ -271,7 +274,7 @@ Check:
 
 ### Webhook returns `401 expired timestamp`
 
-Linear payload timestamp is outside 60-second tolerance. Check sender clock and delayed retries.
+Linear payload timestamp or `Linear-Timestamp` header is outside 60-second tolerance. Check sender clock and delayed retries.
 
 ### Webhook returns `500 notification enqueue failed`
 

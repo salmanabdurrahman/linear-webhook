@@ -31,12 +31,12 @@ Unsupported event types are acknowledged with `200` and marked as ignored to pre
 - Health endpoint: `GET /health`
 - Service info endpoint: `GET /`
 - HMAC-SHA256 signature verification using raw request body
-- Timestamp freshness validation with 60-second tolerance
+- Timestamp freshness validation with 60-second tolerance using payload `webhookTimestamp` or `Linear-Timestamp` header fallback
 - Timing-safe signature comparison
 - Telegram notification delivery via Bot API
 - Cloudflare Queue delivery retries for Telegram failures
-- KV-backed idempotency guard using `Linear-Delivery` or `webhookId`
-- Human-readable Telegram notifications for issue/comment events without debug-only fields
+- KV-backed idempotency guard using `Linear-Delivery` or `webhookId`, with `queued`, `sent`, and `failed` delivery states
+- Human-readable Telegram notifications for issue/comment events without debug-only fields and with deterministic Telegram length limits
 - Safe logging without raw payload or secret values
 - Local signed payload generator for manual testing
 - Unit/integration tests with Bun
