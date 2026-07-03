@@ -37,16 +37,50 @@ Unsupported event types are acknowledged with `200` and marked as ignored to pre
 ## Requirements
 
 - Bun
+- Node.js `>=16.17.0`
+- Cloudflare account
 - Cloudflare Wrangler account/session for deployment
 - Linear workspace webhook secret
 - Telegram bot token and target chat ID
 
 ## Installation
 
+Check runtime versions:
+
+```sh
+node -v
+bun -v
+```
+
 Install dependencies:
 
 ```sh
 bun install
+```
+
+Wrangler is installed as a project dev dependency. Check version:
+
+```sh
+bunx wrangler --version
+```
+
+Optional global install:
+
+```sh
+npm install -g wrangler
+wrangler --version
+```
+
+Log in to Cloudflare:
+
+```sh
+bunx wrangler login
+```
+
+Verify active Cloudflare account:
+
+```sh
+bunx wrangler whoami
 ```
 
 Copy local Worker secrets template:
@@ -203,9 +237,27 @@ bun run typecheck
 Set production secrets through Wrangler:
 
 ```sh
-wrangler secret put LINEAR_WEBHOOK_SECRET
-wrangler secret put TELEGRAM_BOT_TOKEN
-wrangler secret put TELEGRAM_CHAT_ID
+bunx wrangler secret put LINEAR_WEBHOOK_SECRET
+bunx wrangler secret put TELEGRAM_BOT_TOKEN
+bunx wrangler secret put TELEGRAM_CHAT_ID
+```
+
+Paste each secret value when prompted. The Linear webhook secret must match the secret configured in Linear.
+
+Review `wrangler.jsonc` before deploy:
+
+```jsonc
+{
+  "name": "linear-webhook",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-02",
+}
+```
+
+Run a dry-run deploy first:
+
+```sh
+bunx wrangler deploy --dry-run
 ```
 
 Deploy Worker:
@@ -214,10 +266,28 @@ Deploy Worker:
 bun run deploy
 ```
 
-After deployment, configure Linear webhook URL:
+Or directly:
+
+```sh
+bunx wrangler deploy
+```
+
+After deployment, Wrangler prints the Worker URL. Configure Linear webhook URL:
 
 ```txt
 https://<your-worker-domain>/webhooks/linear
+```
+
+Check production health:
+
+```sh
+curl https://<your-worker-domain>/health
+```
+
+Expected response:
+
+```txt
+ok
 ```
 
 Use Linear webhook settings to send a test event and confirm Telegram delivery.
