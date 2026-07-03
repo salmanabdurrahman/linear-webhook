@@ -1,10 +1,10 @@
 # Linear Webhook
 
-Cloudflare Worker for receiving Linear webhooks, validating signatures, and forwarding supported events to Telegram.
+Cloudflare Worker for receiving Linear webhooks, validating signatures, queueing supported events, and forwarding notifications to Telegram.
 
 ## Overview
 
-This project provides a small webhook consumer built for Cloudflare Workers. It receives Linear webhook events at `/webhooks/linear`, verifies the request with HMAC-SHA256, rejects stale payloads to reduce replay risk, extracts safe metadata, then sends a Telegram notification for supported event types.
+This project provides a small webhook consumer built for Cloudflare Workers. It receives Linear webhook events at `/webhooks/linear`, verifies the request with HMAC-SHA256, rejects stale payloads to reduce replay risk, extracts safe metadata, then enqueues Telegram notifications for supported event types. Queue consumers retry Telegram delivery without forcing Linear to retry accepted webhooks.
 
 Supported Linear event types:
 
@@ -21,6 +21,10 @@ Unsupported event types are acknowledged with `200` and marked as ignored to pre
 - **Bun** — package manager, scripts, tests
 - **TypeScript** — source language
 
+## Documentation
+
+- [Deployment and Cloudflare setup](docs/deployment.md) — Queue, KV, secrets, deploy, verification, and troubleshooting.
+
 ## Features
 
 - Linear webhook endpoint: `POST /webhooks/linear`
@@ -30,6 +34,8 @@ Unsupported event types are acknowledged with `200` and marked as ignored to pre
 - Timestamp freshness validation with 60-second tolerance
 - Timing-safe signature comparison
 - Telegram notification delivery via Bot API
+- Cloudflare Queue delivery retries for Telegram failures
+- KV-backed idempotency guard using `Linear-Delivery` or `webhookId`
 - Safe logging without raw payload or secret values
 - Local signed payload generator for manual testing
 - Unit/integration tests with Bun
@@ -107,6 +113,13 @@ Do not commit `.dev.vars`, `.env`, real webhook secrets, Telegram bot tokens, or
 | `TELEGRAM_BOT_TOKEN`    | Yes for notification delivery | Telegram bot token from BotFather.                              |
 | `TELEGRAM_CHAT_ID`      | Yes for notification delivery | Target Telegram chat/channel/user ID.                           |
 
+Cloudflare bindings:
+
+| Binding                | Required for reliable delivery | Description                                                    |
+| ---------------------- | ------------------------------ | -------------------------------------------------------------- |
+| `NOTIFICATION_QUEUE`   | Yes                            | Queue used to decouple webhook acceptance from Telegram sends. |
+| `PROCESSED_DELIVERIES` | Yes                            | KV namespace storing processed `Linear-Delivery`/`webhookId`.  |
+
 If Telegram config is missing, valid webhook requests still return `200`, but notification delivery is skipped and logged safely.
 
 ## Local Development
@@ -151,10 +164,22 @@ Local endpoint:
 http://localhost:8787/webhooks/linear
 ```
 
-Expected successful response:
+Expected successful response without Queue binding:
 
 ```json
 { "received": true }
+```
+
+Expected successful response with Queue binding:
+
+```json
+{ "received": true, "queued": true }
+```
+
+Duplicate delivery response:
+
+```json
+{ "received": true, "duplicate": true }
 ```
 
 Unsupported event response:
@@ -234,63 +259,27 @@ bun run typecheck
 
 ## Deployment
 
-Set production secrets through Wrangler:
+Full deployment guide: [Deployment and Cloudflare setup](docs/deployment.md).
+
+Required Cloudflare resources:
+
+- Queue: `linear-notifications`
+- Workers KV namespace: `PROCESSED_DELIVERIES`
+- Worker secrets: `LINEAR_WEBHOOK_SECRET`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+
+Quick command list:
 
 ```sh
+bunx wrangler queues create linear-notifications
+bunx wrangler kv namespace create PROCESSED_DELIVERIES
 bunx wrangler secret put LINEAR_WEBHOOK_SECRET
 bunx wrangler secret put TELEGRAM_BOT_TOKEN
 bunx wrangler secret put TELEGRAM_CHAT_ID
-```
-
-Paste each secret value when prompted. The Linear webhook secret must match the secret configured in Linear.
-
-Review `wrangler.jsonc` before deploy:
-
-```jsonc
-{
-  "name": "linear-webhook",
-  "main": "src/index.ts",
-  "compatibility_date": "2026-07-02",
-}
-```
-
-Run a dry-run deploy first:
-
-```sh
 bunx wrangler deploy --dry-run
-```
-
-Deploy Worker:
-
-```sh
 bun run deploy
 ```
 
-Or directly:
-
-```sh
-bunx wrangler deploy
-```
-
-After deployment, Wrangler prints the Worker URL. Configure Linear webhook URL:
-
-```txt
-https://<your-worker-domain>/webhooks/linear
-```
-
-Check production health:
-
-```sh
-curl https://<your-worker-domain>/health
-```
-
-Expected response:
-
-```txt
-ok
-```
-
-Use Linear webhook settings to send a test event and confirm Telegram delivery.
+After creating the KV namespace, update `wrangler.jsonc` with the generated namespace ID before deploying.
 
 ## Scripts
 
@@ -315,12 +304,15 @@ Use Linear webhook settings to send a test event and confirm Telegram delivery.
 
 ```txt
 .
+├── docs/
+│   └── deployment.md        # Cloudflare setup and deployment guide
 ├── scripts/
 │   └── sign-payload.ts      # Signed curl payload generator
 ├── src/
 │   ├── crypto.ts            # HMAC and timing-safe comparison helpers
-│   ├── index.ts             # Worker entrypoint and routes
+│   ├── index.ts             # Worker entrypoint, routes, and Queue consumer
 │   ├── linear.ts            # Linear payload parsing and safe logging
+│   ├── queue.ts             # Queue job delivery and idempotency helpers
 │   └── telegram.ts          # Telegram message formatting and delivery
 ├── test/
 │   └── index.test.ts        # Tests

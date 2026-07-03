@@ -2,5 +2,24 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "linear-webhook",
   "main": "src/index.ts",
-  "compatibility_date": "2026-07-02"
+  "compatibility_date": "2026-07-02",
+  "queues": {
+    "producers": [
+      {
+        "queue": "linear-notifications",
+        "binding": "NOTIFICATION_QUEUE"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "linear-notifications"
+      }
+    ]
+  },
+  "kv_namespaces": [
+    {
+      "binding": "PROCESSED_DELIVERIES",
+      "id": "cc452b2b23ba41899c74c3e052a04f51"
+    }
+  ]
 }

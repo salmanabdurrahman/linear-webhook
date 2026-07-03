@@ -2,12 +2,23 @@ import { Elysia } from "elysia";
 import { CloudflareAdapter } from "elysia/adapter/cloudflare-worker";
 import { hmacSha256Hex, normalizeSignature, timingSafeEqualHex } from "./crypto";
 import { logLinearWebhookEvent, parseLinearWebhookEvent, type LinearWebhookPayload } from "./linear";
+import {
+  clearDelivery,
+  deliverNotificationJob,
+  getDeliveryId,
+  isDuplicateDelivery,
+  markDeliveryQueued,
+  markDeliverySent,
+  type NotificationJob,
+} from "./queue";
 import { sendTelegramNotification } from "./telegram";
 
 interface Env {
   LINEAR_WEBHOOK_SECRET?: string;
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_CHAT_ID?: string;
+  NOTIFICATION_QUEUE?: Queue<NotificationJob>;
+  PROCESSED_DELIVERIES?: KVNamespace;
 }
 
 const TIMESTAMP_TOLERANCE_MS = 60_000;
@@ -54,11 +65,34 @@ export async function handleLinearWebhook(request: Request, env: Env, ctx?: Exec
     return Response.json({ received: true, ignored: true });
   }
 
-  const sendNotification = sendTelegramNotification({ botToken: env.TELEGRAM_BOT_TOKEN, chatId: env.TELEGRAM_CHAT_ID }, event).catch(
-    () => {
+  const deliveryId = getDeliveryId(event);
+
+  if (await isDuplicateDelivery(env.PROCESSED_DELIVERIES, deliveryId)) {
+    return Response.json({ received: true, duplicate: true });
+  }
+
+  if (env.NOTIFICATION_QUEUE) {
+    try {
+      await markDeliveryQueued(env.PROCESSED_DELIVERIES, deliveryId);
+      await env.NOTIFICATION_QUEUE.send({ deliveryId, event });
+    } catch {
+      await clearDelivery(env.PROCESSED_DELIVERIES, deliveryId);
+      console.warn("notification enqueue failed");
+      return new Response("notification enqueue failed", { status: 500 });
+    }
+
+    return Response.json({ received: true, queued: true });
+  }
+
+  const sendNotification = sendTelegramNotification({ botToken: env.TELEGRAM_BOT_TOKEN, chatId: env.TELEGRAM_CHAT_ID }, event)
+    .then(async (result) => {
+      if (result.sent) {
+        await markDeliverySent(env.PROCESSED_DELIVERIES, deliveryId);
+      }
+    })
+    .catch(() => {
       console.warn("telegram notification failed");
-    },
-  );
+    });
 
   if (ctx) {
     ctx.waitUntil(sendNotification);
@@ -78,6 +112,15 @@ const worker = {
     }
 
     return app.fetch(request);
+  },
+  async queue(batch: MessageBatch<NotificationJob>, env: Env = {}): Promise<void> {
+    for (const message of batch.messages) {
+      await deliverNotificationJob(message.body, {
+        botToken: env.TELEGRAM_BOT_TOKEN,
+        chatId: env.TELEGRAM_CHAT_ID,
+      }, env.PROCESSED_DELIVERIES);
+      message.ack();
+    }
   },
 };
 
