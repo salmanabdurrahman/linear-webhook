@@ -1,4 +1,5 @@
 import type { ParsedLinearWebhookEvent } from "./linear";
+import { withLoggerContext } from "./logger";
 
 export interface TelegramConfig {
   botToken?: string;
@@ -24,8 +25,14 @@ export async function sendTelegramNotification(
 ): Promise<TelegramSendResult> {
   const missingConfig = getMissingTelegramConfig(config);
 
+  const logger = withLoggerContext({
+    deliveryId: event.metadata.delivery,
+    webhookId: event.metadata.webhookId,
+    eventType: event.metadata.type,
+  });
+
   if (missingConfig.length > 0) {
-    console.warn("telegram notification skipped: missing config", { missingConfig });
+    logger("warn", "telegram notification skipped: missing config", { missingConfig });
     return { sent: false, skipped: true, error: "missing telegram config" };
   }
 
@@ -39,7 +46,7 @@ export async function sendTelegramNotification(
   });
 
   if (!response.ok) {
-    console.warn("telegram notification failed", { status: response.status });
+    logger("warn", "telegram notification failed", { status: response.status });
     return { sent: false, skipped: false, error: "telegram request failed" };
   }
 

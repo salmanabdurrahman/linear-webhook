@@ -119,10 +119,10 @@ Do not commit `.dev.vars`, `.env`, real webhook secrets, Telegram bot tokens, or
 
 Cloudflare bindings:
 
-| Binding                | Required for reliable delivery | Description                                                    |
-| ---------------------- | ------------------------------ | -------------------------------------------------------------- |
-| `NOTIFICATION_QUEUE`   | Yes                            | Queue used to decouple webhook acceptance from Telegram sends. |
-| `PROCESSED_DELIVERIES` | Yes                            | KV namespace storing processed `Linear-Delivery`/`webhookId`.  |
+| Binding                | Required for reliable delivery | Description                                                                                    |
+| ---------------------- | ------------------------------ | ---------------------------------------------------------------------------------------------- |
+| `NOTIFICATION_QUEUE`   | Yes                            | Queue used to decouple webhook acceptance from Telegram sends.                                 |
+| `PROCESSED_DELIVERIES` | Yes                            | KV namespace storing processed `Linear-Delivery`/`webhookId`; `/health` probes it with a read. |
 
 If Telegram config is missing, valid webhook requests still return `200`, but notification delivery is skipped and logged safely.
 
@@ -148,10 +148,16 @@ Check health:
 curl http://localhost:8787/health
 ```
 
-Expected response:
+Expected response when Queue and KV bindings are configured:
 
-```txt
-ok
+```json
+{
+  "status": "ok",
+  "bindings": {
+    "notificationQueue": { "configured": true, "status": "ok" },
+    "processedDeliveries": { "configured": true, "status": "ok" }
+  }
+}
 ```
 
 ## Webhook Endpoint
@@ -311,11 +317,12 @@ After creating the KV namespace, update `wrangler.jsonc` with the generated name
 
 ## Security Notes
 
+- Protect `/webhooks/linear` with a Cloudflare WAF or rate limiting rule in production. Recommended starting point: match path `/webhooks/linear`, method `POST`, and rate limit by source IP before Worker execution.
 - Requests declaring `Content-Length` over 100KB are rejected before the body is read.
 - Signature verification uses raw request body. Do not parse or stringify JSON before verification.
 - `Linear-Signature` is validated with HMAC-SHA256.
 - Timestamp tolerance is 60 seconds to reduce replay attack risk.
-- Logs include safe metadata only, not raw payloads or secret values.
+- Logs are structured JSON with timestamp, level, message, delivery ID, webhook ID, event type, and safe metadata only. Raw payloads and secret values are not logged.
 - Secrets must be stored as Cloudflare Worker secrets in production.
 - Local secret files are gitignored and must stay untracked.
 

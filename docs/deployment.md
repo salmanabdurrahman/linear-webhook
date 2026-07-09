@@ -126,10 +126,16 @@ Health check:
 curl http://localhost:8787/health
 ```
 
-Expected response:
+Expected response when Queue and KV bindings are configured:
 
-```txt
-ok
+```json
+{
+  "status": "ok",
+  "bindings": {
+    "notificationQueue": { "configured": true, "status": "ok" },
+    "processedDeliveries": { "configured": true, "status": "ok" }
+  }
+}
 ```
 
 ## 5. Verify Before Deploy
@@ -194,10 +200,16 @@ Health check:
 curl https://<your-worker-domain>/health
 ```
 
-Expected response:
+Expected response when Queue and KV bindings are configured:
 
-```txt
-ok
+```json
+{
+  "status": "ok",
+  "bindings": {
+    "notificationQueue": { "configured": true, "status": "ok" },
+    "processedDeliveries": { "configured": true, "status": "ok" }
+  }
+}
 ```
 
 Send a Linear test webhook and verify:
@@ -239,10 +251,20 @@ Send a Linear test webhook and verify:
 - Failed Queue consumer deliveries are marked `failed`, so manual replay can enqueue again. After 3 failures, logs include `notification delivery repeatedly failed` with delivery ID and attempt count.
 - KV `get`/`put` is not atomic. Concurrent identical deliveries can still race. For strict exactly-once delivery, move idempotency to Durable Objects, D1 unique keys, or another atomic coordinator.
 
+### Rate limiting
+
+Use Cloudflare WAF or rate limiting rules in production to protect `/webhooks/linear` before requests reach the Worker. Recommended rule:
+
+- Match URI path `/webhooks/linear`.
+- Match method `POST`.
+- Rate limit by source IP.
+- Keep Linear signature and timestamp validation enabled in the Worker.
+
 ### Logging
 
-Logs are intentionally redacted:
+Logs are structured JSON and intentionally redacted:
 
+- Include `ts`, `level`, `msg`, and safe context such as `deliveryId`, `webhookId`, and `eventType`.
 - No raw webhook body.
 - No Telegram token.
 - No Telegram chat ID.

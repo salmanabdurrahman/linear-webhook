@@ -47,7 +47,9 @@ describe("linear webhook parsing", () => {
 
     try {
       logLinearWebhookEvent(event);
-      expect(consoleLog).toHaveBeenCalledWith("linear webhook received", expect.objectContaining({ type: "Issue", supported: true }));
+      expect(consoleLog).toHaveBeenCalled();
+      const logEntry = JSON.parse(consoleLog.mock.calls[0]?.[0] as string) as Record<string, unknown>;
+      expect(logEntry).toEqual(expect.objectContaining({ msg: "linear webhook received", type: "Issue", eventType: "Issue", supported: true }));
       expect(JSON.stringify(consoleLog.mock.calls)).not.toContain("secret body");
     } finally {
       consoleLog.mockRestore();

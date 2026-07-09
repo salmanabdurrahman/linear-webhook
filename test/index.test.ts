@@ -38,11 +38,33 @@ describe("service routes", () => {
     expect(await response.json() as Record<string, string>).toEqual({ service: "linear-webhook", status: "ok" });
   });
 
-  it("returns health ok", async () => {
-    const response = await app.fetch(new Request("http://localhost/health"));
+  it("returns dependency-aware health", async () => {
+    const response = await app.fetch(new Request("http://localhost/health"), {
+      NOTIFICATION_QUEUE: { send: () => Promise.resolve() } as unknown as Queue,
+      PROCESSED_DELIVERIES: createMemoryKv(),
+    });
 
     expect(response.status).toBe(200);
-    expect(await response.text()).toBe("ok");
+    expect(await response.json() as Record<string, unknown>).toEqual({
+      status: "ok",
+      bindings: {
+        notificationQueue: { configured: true, status: "ok" },
+        processedDeliveries: { configured: true, status: "ok" },
+      },
+    });
+  });
+
+  it("returns degraded health when required bindings are missing", async () => {
+    const response = await app.fetch(new Request("http://localhost/health"));
+
+    expect(response.status).toBe(503);
+    expect(await response.json() as Record<string, unknown>).toEqual({
+      status: "degraded",
+      bindings: {
+        notificationQueue: { configured: false, status: "missing" },
+        processedDeliveries: { configured: false, status: "missing" },
+      },
+    });
   });
 });
 
@@ -88,7 +110,9 @@ describe("linear webhook integration", () => {
       });
 
       expect(response.status).toBe(200);
-      expect(consoleLog).toHaveBeenCalledWith("linear webhook received", expect.objectContaining({ type: "Issue", supported: true }));
+      expect(consoleLog).toHaveBeenCalled();
+      const logEntry = JSON.parse(consoleLog.mock.calls[0]?.[0] as string) as Record<string, unknown>;
+      expect(logEntry).toEqual(expect.objectContaining({ msg: "linear webhook received", type: "Issue", eventType: "Issue", supported: true }));
       expect(JSON.stringify(consoleLog.mock.calls)).not.toContain("do-not-log");
     } finally {
       consoleLog.mockRestore();

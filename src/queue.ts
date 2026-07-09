@@ -1,4 +1,5 @@
 import type { ParsedLinearWebhookEvent } from "./linear";
+import { withLoggerContext } from "./logger";
 import { sendTelegramNotification, type TelegramConfig } from "./telegram";
 
 export interface NotificationJob {
@@ -42,7 +43,7 @@ export async function isDuplicateDelivery(store: KVNamespace | undefined, delive
       return true;
     }
 
-    console.warn("stale queued delivery replay allowed", { deliveryId });
+    withLoggerContext({ deliveryId })("warn", "stale queued delivery replay allowed");
   }
 
   return false;
@@ -67,7 +68,7 @@ export async function markDeliveryFailed(store: KVNamespace | undefined, deliver
   await markDelivery(store, deliveryId, { status: "failed", updatedAt: now, attempts });
 
   if (attempts >= QUEUE_FAILURE_ALERT_THRESHOLD) {
-    console.warn("notification delivery repeatedly failed", { deliveryId, attempts });
+    withLoggerContext({ deliveryId })("warn", "notification delivery repeatedly failed", { attempts });
   }
 }
 
@@ -87,7 +88,11 @@ export async function deliverNotificationJob(
   const record = store && job.deliveryId ? parseDeliveryRecord(await store.get(job.deliveryId)) : null;
 
   if (record?.status === "sent") {
-    console.log("duplicate notification job skipped", { deliveryId: job.deliveryId });
+    withLoggerContext({
+      deliveryId: job.deliveryId,
+      webhookId: job.event.metadata.webhookId,
+      eventType: job.event.metadata.type,
+    })("log", "duplicate notification job skipped");
     return;
   }
 
@@ -95,7 +100,11 @@ export async function deliverNotificationJob(
 
   if (!result.sent) {
     await markDeliveryFailed(store, job.deliveryId);
-    console.warn("telegram notification retry scheduled");
+    withLoggerContext({
+      deliveryId: job.deliveryId,
+      webhookId: job.event.metadata.webhookId,
+      eventType: job.event.metadata.type,
+    })("warn", "telegram notification retry scheduled");
     throw new Error("telegram notification failed");
   }
 

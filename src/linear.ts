@@ -1,4 +1,5 @@
 import * as v from "valibot";
+import { log } from "./logger";
 
 export type SupportedLinearEventType = "Issue" | "Comment";
 
@@ -159,7 +160,10 @@ export function logLinearWebhookEvent(event: ParsedLinearWebhookEvent): void {
     event: eventName,
   } = event.metadata;
 
-  console.log("linear webhook received", {
+  log("log", "linear webhook received", {
+    deliveryId: delivery,
+    webhookId,
+    eventType: type,
     type,
     action,
     issueIdentifier,
@@ -172,8 +176,6 @@ export function logLinearWebhookEvent(event: ParsedLinearWebhookEvent): void {
     priority,
     labels,
     team,
-    webhookId,
-    delivery,
     event: eventName,
     supported: event.supported,
   });

@@ -93,7 +93,12 @@ describe("queue helpers", () => {
         chatId: "chat-1",
       }, store)).rejects.toThrow("telegram notification failed");
       expect(parseDeliveryRecord(await store.get("delivery-fail"))).toMatchObject({ status: "failed", attempts: 3 });
-      expect(consoleWarn).toHaveBeenCalledWith("notification delivery repeatedly failed", { deliveryId: "delivery-fail", attempts: 3 });
+      const warningEntries = consoleWarn.mock.calls.map(([entry]) => JSON.parse(entry as string) as Record<string, unknown>);
+      expect(warningEntries).toContainEqual(expect.objectContaining({
+        msg: "notification delivery repeatedly failed",
+        deliveryId: "delivery-fail",
+        attempts: 3,
+      }));
     } finally {
       consoleWarn.mockRestore();
     }
