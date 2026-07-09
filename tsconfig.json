@@ -8,7 +8,9 @@
     "types": ["@cloudflare/workers-types"],
     "noEmit": true,
     "allowSyntheticDefaultImports": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    "noUncheckedIndexedAccess": true,
+    "noPropertyAccessFromIndexSignature": true
   },
   "include": ["src/**/*.ts", "test/**/*.ts", "worker-configuration.d.ts"]
 }

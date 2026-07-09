@@ -1,44 +1,82 @@
+import * as v from "valibot";
+
 export type SupportedLinearEventType = "Issue" | "Comment";
 
-export interface LinearWebhookPayload {
-  type?: unknown;
-  action?: unknown;
-  actor?: LinearNamedEntity | null;
-  data?: LinearWebhookData | null;
-  updatedFrom?: LinearWebhookChanges | null;
-  url?: unknown;
-  webhookId?: unknown;
-  webhookTimestamp?: unknown;
+const LinearNamedEntitySchema = v.object({
+  id: v.optional(v.unknown()),
+  name: v.optional(v.unknown()),
+});
+
+const LinearIssueReferenceSchema = v.object({
+  identifier: v.optional(v.unknown()),
+  title: v.optional(v.unknown()),
+  url: v.optional(v.unknown()),
+});
+
+const LinearLabelsSchema = v.union([
+  v.object({ nodes: v.optional(v.array(LinearNamedEntitySchema)) }),
+  v.array(v.unknown()),
+  v.null(),
+]);
+
+const LinearWebhookDataSchema = v.object({
+  identifier: v.optional(v.unknown()),
+  number: v.optional(v.unknown()),
+  title: v.optional(v.unknown()),
+  body: v.optional(v.unknown()),
+  description: v.optional(v.unknown()),
+  state: v.optional(v.union([LinearNamedEntitySchema, v.string(), v.null()])),
+  assignee: v.optional(v.nullable(LinearNamedEntitySchema)),
+  priority: v.optional(v.unknown()),
+  priorityLabel: v.optional(v.unknown()),
+  labels: v.optional(LinearLabelsSchema),
+  team: v.optional(v.nullable(LinearNamedEntitySchema)),
+  issue: v.optional(v.nullable(LinearIssueReferenceSchema)),
+});
+
+const LinearWebhookChangesSchema = v.record(v.string(), v.unknown());
+
+export const LinearWebhookPayloadSchema = v.object({
+  type: v.optional(v.unknown()),
+  action: v.optional(v.unknown()),
+  actor: v.optional(v.nullable(LinearNamedEntitySchema)),
+  data: v.optional(v.nullable(LinearWebhookDataSchema)),
+  updatedFrom: v.optional(v.nullable(LinearWebhookChangesSchema)),
+  url: v.optional(v.unknown()),
+  webhookId: v.optional(v.unknown()),
+  webhookTimestamp: v.optional(v.unknown()),
+});
+
+export type LinearWebhookPayload = v.InferOutput<typeof LinearWebhookPayloadSchema>;
+
+type LinearNamedEntity = v.InferOutput<typeof LinearNamedEntitySchema>;
+type LinearWebhookData = v.InferOutput<typeof LinearWebhookDataSchema>;
+type LinearWebhookChanges = v.InferOutput<typeof LinearWebhookChangesSchema>;
+
+export interface LinearPayloadValidationFailure {
+  ok: false;
+  errorType: "invalid_payload";
 }
 
-interface LinearNamedEntity {
-  id?: unknown;
-  name?: unknown;
+export interface LinearPayloadValidationSuccess {
+  ok: true;
+  payload: LinearWebhookPayload;
 }
 
-interface LinearWebhookData {
-  identifier?: unknown;
-  number?: unknown;
-  title?: unknown;
-  body?: unknown;
-  description?: unknown;
-  state?: LinearNamedEntity | string | null;
-  assignee?: LinearNamedEntity | null;
-  priority?: unknown;
-  priorityLabel?: unknown;
-  labels?: {
-    nodes?: LinearNamedEntity[];
-  } | LinearNamedEntity[] | null;
-  team?: LinearNamedEntity | null;
-  issue?: {
-    identifier?: unknown;
-    title?: unknown;
-    url?: unknown;
-  } | null;
-}
+export type LinearPayloadValidationResult = LinearPayloadValidationFailure | LinearPayloadValidationSuccess;
 
-interface LinearWebhookChanges {
-  [field: string]: unknown;
+export function validateLinearWebhookPayload(value: unknown): LinearPayloadValidationResult {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { ok: false, errorType: "invalid_payload" };
+  }
+
+  const result = v.safeParse(LinearWebhookPayloadSchema, value);
+
+  if (!result.success) {
+    return { ok: false, errorType: "invalid_payload" };
+  }
+
+  return { ok: true, payload: result.output };
 }
 
 export interface LinearWebhookMetadata {

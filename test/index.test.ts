@@ -872,6 +872,21 @@ describe("linear webhook", () => {
     expect(response.status).toBe(401);
   });
 
+  it("returns typed payload validation errors without logging raw body", async () => {
+    const consoleLog = spyOn(console, "log").mockImplementation(() => undefined);
+    const body = JSON.stringify([]);
+
+    try {
+      const response = await postLinearWebhook(body, await hmacSha256Hex(secret, body));
+
+      expect(response.status).toBe(400);
+      expect(await response.text()).toBe("invalid_payload");
+      expect(consoleLog).not.toHaveBeenCalled();
+    } finally {
+      consoleLog.mockRestore();
+    }
+  });
+
   it("returns bad request for invalid JSON after signature validation", async () => {
     const body = "not json";
     const response = await postLinearWebhook(body, await hmacSha256Hex(secret, body));

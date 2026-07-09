@@ -20,6 +20,7 @@ Unsupported event types are acknowledged with `200` and marked as ignored to pre
 - **ElysiaJS** — HTTP routing with Cloudflare Worker adapter
 - **Bun** — package manager, scripts, tests
 - **TypeScript** — source language
+- **Valibot** — runtime webhook payload validation
 
 ## Documentation
 
@@ -32,6 +33,7 @@ Unsupported event types are acknowledged with `200` and marked as ignored to pre
 - Service info endpoint: `GET /`
 - HMAC-SHA256 signature verification using raw request body
 - Request body size guard that rejects requests declaring `Content-Length` over 100KB before reading the body
+- Runtime payload schema validation after signature verification
 - Timestamp freshness validation with 60-second tolerance using payload `webhookTimestamp` or `Linear-Timestamp` header fallback
 - Timing-safe signature comparison
 - Telegram notification delivery via Bot API
@@ -200,6 +202,12 @@ Invalid JSON response after signature verification:
 
 ```txt
 400 invalid payload
+```
+
+Invalid payload shape response after signature verification:
+
+```txt
+400 invalid_payload
 ```
 
 Oversized payload response:

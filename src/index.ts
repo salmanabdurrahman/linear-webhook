@@ -1,7 +1,7 @@
 import { Elysia } from "elysia";
 import { CloudflareAdapter } from "elysia/adapter/cloudflare-worker";
 import { hmacSha256Hex, normalizeSignature, timingSafeEqualHex } from "./crypto";
-import { logLinearWebhookEvent, parseLinearWebhookEvent, type LinearWebhookPayload } from "./linear";
+import { logLinearWebhookEvent, parseLinearWebhookEvent, validateLinearWebhookPayload, type LinearWebhookPayload } from "./linear";
 import {
   clearDelivery,
   deliverNotificationJob,
@@ -51,13 +51,21 @@ export async function handleLinearWebhook(request: Request, env: Env, ctx?: Exec
     return new Response("invalid signature", { status: 401 });
   }
 
-  let payload: LinearWebhookPayload;
+  let parsedBody: unknown;
 
   try {
-    payload = JSON.parse(rawBody) as LinearWebhookPayload;
+    parsedBody = JSON.parse(rawBody) as unknown;
   } catch {
     return new Response("invalid payload", { status: 400 });
   }
+
+  const validation = validateLinearWebhookPayload(parsedBody);
+
+  if (!validation.ok) {
+    return new Response(validation.errorType, { status: 400 });
+  }
+
+  const { payload } = validation;
 
   if (!isTimestampFresh(webhookTimestamp(payload, request.headers), Date.now())) {
     return new Response("expired timestamp", { status: 401 });

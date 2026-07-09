@@ -33,7 +33,7 @@ export function timingSafeEqualHex(actual: string, expected: string): boolean {
 
   let diff = 0;
   for (let index = 0; index < expectedBytes.length; index += 1) {
-    diff |= actualBytes[index] ^ expectedBytes[index];
+    diff |= (actualBytes[index] ?? 0) ^ (expectedBytes[index] ?? 0);
   }
 
   return diff === 0 && actualIsValid;
