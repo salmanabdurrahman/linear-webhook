@@ -334,7 +334,13 @@ After creating the KV namespace, update `wrangler.jsonc` with the generated name
 │   ├── queue.ts             # Queue job delivery and idempotency helpers
 │   └── telegram.ts          # Telegram message formatting and delivery
 ├── test/
-│   └── index.test.ts        # Tests
+│   ├── crypto.test.ts       # Crypto helper tests
+│   ├── helpers.ts           # Test helpers
+│   ├── index.test.ts        # Route and integration tests
+│   ├── linear.test.ts       # Linear payload parsing tests
+│   ├── queue.test.ts        # Queue delivery/idempotency tests
+│   ├── scripts.test.ts      # CLI script tests
+│   └── telegram.test.ts     # Telegram formatting/delivery tests
 ├── .dev.vars.example        # Local Worker secret template
 ├── .env.example             # Env template
 ├── package.json

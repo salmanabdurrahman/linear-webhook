@@ -110,7 +110,7 @@ async function markDelivery(store: KVNamespace | undefined, deliveryId: string |
   await store.put(deliveryId, JSON.stringify(record), { expirationTtl: DELIVERY_TTL_SECONDS });
 }
 
-function parseDeliveryRecord(value: string | null): DeliveryRecord | null {
+export function parseDeliveryRecord(value: string | null): DeliveryRecord | null {
   if (!value) {
     return null;
   }
