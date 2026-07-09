@@ -31,6 +31,7 @@ Unsupported event types are acknowledged with `200` and marked as ignored to pre
 - Health endpoint: `GET /health`
 - Service info endpoint: `GET /`
 - HMAC-SHA256 signature verification using raw request body
+- Request body size guard that rejects requests declaring `Content-Length` over 100KB before reading the body
 - Timestamp freshness validation with 60-second tolerance using payload `webhookTimestamp` or `Linear-Timestamp` header fallback
 - Timing-safe signature comparison
 - Telegram notification delivery via Bot API
@@ -201,6 +202,12 @@ Invalid JSON response after signature verification:
 400 invalid payload
 ```
 
+Oversized payload response:
+
+```txt
+413 payload too large
+```
+
 Expired/future timestamp response:
 
 ```txt
@@ -265,6 +272,7 @@ Full deployment guide: [Deployment and Cloudflare setup](docs/deployment.md).
 Required Cloudflare resources:
 
 - Queue: `linear-notifications`
+- Dead Letter Queue: `linear-notifications-dlq`
 - Workers KV namespace: `PROCESSED_DELIVERIES`
 - Worker secrets: `LINEAR_WEBHOOK_SECRET`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
 
@@ -272,6 +280,7 @@ Quick command list:
 
 ```sh
 bunx wrangler queues create linear-notifications
+bunx wrangler queues create linear-notifications-dlq
 bunx wrangler kv namespace create PROCESSED_DELIVERIES
 bunx wrangler secret put LINEAR_WEBHOOK_SECRET
 bunx wrangler secret put TELEGRAM_BOT_TOKEN
@@ -294,6 +303,7 @@ After creating the KV namespace, update `wrangler.jsonc` with the generated name
 
 ## Security Notes
 
+- Requests declaring `Content-Length` over 100KB are rejected before the body is read.
 - Signature verification uses raw request body. Do not parse or stringify JSON before verification.
 - `Linear-Signature` is validated with HMAC-SHA256.
 - Timestamp tolerance is 60 seconds to reduce replay attack risk.

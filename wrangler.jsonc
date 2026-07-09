@@ -12,7 +12,9 @@
     ],
     "consumers": [
       {
-        "queue": "linear-notifications"
+        "queue": "linear-notifications",
+        "max_retries": 5,
+        "dead_letter_queue": "linear-notifications-dlq"
       }
     ]
   },

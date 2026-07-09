@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { hmacSha256Hex, normalizeSignature, timingSafeEqualHex } from "../src/crypto";
-import app, { handleLinearWebhook, isTimestampFresh, timestampFromHeader, webhookTimestamp } from "../src/index";
+import app, { handleLinearWebhook, isTimestampFresh, isWebhookBodyTooLarge, timestampFromHeader, webhookTimestamp } from "../src/index";
 import { parseLinearWebhookEvent } from "../src/linear";
 import { formatTelegramMessage } from "../src/telegram";
 
@@ -39,11 +39,26 @@ function deliveryStatus(value: string | null): StoredDeliveryStatus | null {
 
 describe("wrangler config", () => {
   it("uses a supported compatibility date", async () => {
-    const config = (await Bun.file("wrangler.jsonc").json()) as { compatibility_date: string };
+    const config = (await Bun.file("wrangler.jsonc").json()) as {
+      compatibility_date: string;
+      queues: { consumers: Array<{ dead_letter_queue?: string; max_retries?: number; queue: string }> };
+    };
     const today = new Date().toISOString().slice(0, 10);
 
     expect(config.compatibility_date).toBe("2026-07-02");
     expect(config.compatibility_date <= today).toBe(true);
+  });
+
+  it("configures a dead letter queue for notification retries", async () => {
+    const config = (await Bun.file("wrangler.jsonc").json()) as {
+      queues: { consumers: Array<{ dead_letter_queue?: string; max_retries?: number; queue: string }> };
+    };
+
+    expect(config.queues.consumers).toContainEqual({
+      queue: "linear-notifications",
+      max_retries: 5,
+      dead_letter_queue: "linear-notifications-dlq",
+    });
   });
 });
 
@@ -102,6 +117,12 @@ describe("crypto helpers", () => {
     expect(timestampFromHeader(headers)).toBe(61_000);
     expect(webhookTimestamp({ webhookTimestamp: "bad" }, headers)).toBe(61_000);
     expect(timestampFromHeader(new Headers({ "Linear-Timestamp": "not-a-number" }))).toBeNull();
+  });
+
+  it("detects oversized webhook content length", () => {
+    expect(isWebhookBodyTooLarge(new Headers({ "Content-Length": String(100 * 1024 + 1) }))).toBe(true);
+    expect(isWebhookBodyTooLarge(new Headers({ "Content-Length": String(100 * 1024) }))).toBe(false);
+    expect(isWebhookBodyTooLarge(new Headers({ "Content-Length": "invalid" }))).toBe(false);
   });
 });
 
@@ -378,20 +399,29 @@ describe("linear webhook", () => {
   it("retries queue consumer failures without leaking Telegram config", async () => {
     const consoleWarn = spyOn(console, "warn").mockImplementation(() => undefined);
     globalThis.fetch = (() => Promise.resolve(new Response(JSON.stringify({ ok: false }), { status: 500 }))) as unknown as typeof fetch;
+    let retryCount = 0;
+    let ackCount = 0;
     const message = {
       body: {
         deliveryId: "delivery-retry",
         event: parseLinearWebhookEvent({ type: "Issue", webhookTimestamp: Date.now() }, new Headers()),
       },
-      ack() {},
+      ack() {
+        ackCount += 1;
+      },
+      retry() {
+        retryCount += 1;
+      },
     };
 
     try {
-      await expect(app.queue({ messages: [message] } as unknown as MessageBatch<never>, {
+      await app.queue({ messages: [message] } as unknown as MessageBatch<never>, {
         TELEGRAM_BOT_TOKEN: "telegram-token",
         TELEGRAM_CHAT_ID: "chat-1",
         PROCESSED_DELIVERIES: createMemoryKv({ "delivery-retry": "queued" }),
-      })).rejects.toThrow("telegram notification failed");
+      });
+      expect(retryCount).toBe(1);
+      expect(ackCount).toBe(0);
       expect(JSON.stringify(consoleWarn.mock.calls)).not.toContain("telegram-token");
       expect(JSON.stringify(consoleWarn.mock.calls)).not.toContain("chat-1");
     } finally {
@@ -410,24 +440,68 @@ describe("linear webhook", () => {
     expect(response.status).toBe(200);
   });
 
+  it("acks successful queue messages and retries failed messages in the same batch", async () => {
+    const consoleWarn = spyOn(console, "warn").mockImplementation(() => undefined);
+    const responses = [
+      new Response(JSON.stringify({ ok: false }), { status: 500 }),
+      new Response(JSON.stringify({ ok: true }), { status: 200 }),
+    ];
+    globalThis.fetch = (() => Promise.resolve(responses.shift() ?? new Response(JSON.stringify({ ok: true }), { status: 200 }))) as unknown as typeof fetch;
+    const calls = { firstAck: 0, firstRetry: 0, secondAck: 0, secondRetry: 0 };
+    const event = parseLinearWebhookEvent({ type: "Issue", webhookTimestamp: Date.now() }, new Headers());
+
+    try {
+      await app.queue({
+        messages: [
+          {
+            body: { deliveryId: "delivery-batch-fail", event },
+            ack() { calls.firstAck += 1; },
+            retry() { calls.firstRetry += 1; },
+          },
+          {
+            body: { deliveryId: "delivery-batch-success", event },
+            ack() { calls.secondAck += 1; },
+            retry() { calls.secondRetry += 1; },
+          },
+        ],
+      } as unknown as MessageBatch<never>, {
+        TELEGRAM_BOT_TOKEN: "telegram-token",
+        TELEGRAM_CHAT_ID: "chat-1",
+        PROCESSED_DELIVERIES: createMemoryKv({
+          "delivery-batch-fail": "queued",
+          "delivery-batch-success": "queued",
+        }),
+      });
+
+      expect(calls).toEqual({ firstAck: 0, firstRetry: 1, secondAck: 1, secondRetry: 0 });
+    } finally {
+      consoleWarn.mockRestore();
+    }
+  });
+
   it("records queue consumer failures for replay and alerting", async () => {
     const consoleWarn = spyOn(console, "warn").mockImplementation(() => undefined);
     globalThis.fetch = (() => Promise.resolve(new Response(JSON.stringify({ ok: false }), { status: 500 }))) as unknown as typeof fetch;
     const store = createMemoryKv({ "delivery-retry": JSON.stringify({ status: "failed", updatedAt: Date.now(), attempts: 2 }) });
+    let retryCount = 0;
     const message = {
       body: {
         deliveryId: "delivery-retry",
         event: parseLinearWebhookEvent({ type: "Issue", webhookTimestamp: Date.now() }, new Headers()),
       },
       ack() {},
+      retry() {
+        retryCount += 1;
+      },
     };
 
     try {
-      await expect(app.queue({ messages: [message] } as unknown as MessageBatch<never>, {
+      await app.queue({ messages: [message] } as unknown as MessageBatch<never>, {
         TELEGRAM_BOT_TOKEN: "telegram-token",
         TELEGRAM_CHAT_ID: "chat-1",
         PROCESSED_DELIVERIES: store,
-      })).rejects.toThrow("telegram notification failed");
+      });
+      expect(retryCount).toBe(1);
       expect(deliveryStatus(await store.get("delivery-retry"))).toBe("failed");
       expect(consoleWarn).toHaveBeenCalledWith("notification delivery repeatedly failed", { deliveryId: "delivery-retry", attempts: 3 });
     } finally {
@@ -711,6 +785,24 @@ describe("linear webhook", () => {
     } finally {
       consoleWarn.mockRestore();
     }
+  });
+
+  it("rejects oversized webhook payloads before signature validation", async () => {
+    const body = JSON.stringify({ webhookTimestamp: Date.now(), type: "Issue" });
+    const response = await app.fetch(
+      new Request("http://localhost/webhooks/linear", {
+        method: "POST",
+        headers: {
+          "Content-Length": String(100 * 1024 + 1),
+          "Linear-Signature": await hmacSha256Hex(secret, body),
+        },
+        body,
+      }),
+      { LINEAR_WEBHOOK_SECRET: secret },
+    );
+
+    expect(response.status).toBe(413);
+    expect(await response.text()).toBe("payload too large");
   });
 
   it("rejects an invalid signature", async () => {

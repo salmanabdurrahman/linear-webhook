@@ -6,11 +6,12 @@ This guide covers Cloudflare resources, secrets, configuration, deployment, and 
 
 Create these resources once per environment:
 
-| Resource       | Name / binding                                                    | Purpose                                                                                                           |
-| -------------- | ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| Queue          | `linear-notifications` / `NOTIFICATION_QUEUE`                     | Decouples Linear webhook acceptance from Telegram delivery. Telegram failures retry from the Queue consumer.      |
-| Workers KV     | `PROCESSED_DELIVERIES`                                            | Stores processed `Linear-Delivery` IDs, falling back to `webhookId`, to prevent duplicate Telegram notifications. |
-| Worker secrets | `LINEAR_WEBHOOK_SECRET`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Signature verification and Telegram delivery config.                                                              |
+| Resource          | Name / binding                                                    | Purpose                                                                                                           |
+| ----------------- | ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Queue             | `linear-notifications` / `NOTIFICATION_QUEUE`                     | Decouples Linear webhook acceptance from Telegram delivery. Telegram failures retry from the Queue consumer.      |
+| Dead Letter Queue | `linear-notifications-dlq`                                        | Receives notification jobs that still fail after Queue retries are exhausted.                                     |
+| Workers KV        | `PROCESSED_DELIVERIES`                                            | Stores processed `Linear-Delivery` IDs, falling back to `webhookId`, to prevent duplicate Telegram notifications. |
+| Worker secrets    | `LINEAR_WEBHOOK_SECRET`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Signature verification and Telegram delivery config.                                                              |
 
 ## Prerequisites
 
@@ -37,9 +38,10 @@ bunx wrangler whoami
 
 ```sh
 bunx wrangler queues create linear-notifications
+bunx wrangler queues create linear-notifications-dlq
 ```
 
-`wrangler.jsonc` already expects this Queue name:
+`wrangler.jsonc` already expects these Queue names:
 
 ```jsonc
 "queues": {
@@ -51,7 +53,9 @@ bunx wrangler queues create linear-notifications
   ],
   "consumers": [
     {
-      "queue": "linear-notifications"
+      "queue": "linear-notifications",
+      "max_retries": 5,
+      "dead_letter_queue": "linear-notifications-dlq"
     }
   ]
 }
@@ -146,6 +150,7 @@ bunx wrangler deploy --dry-run
 If dry-run fails, check:
 
 - Queue `linear-notifications` exists.
+- Dead Letter Queue `linear-notifications-dlq` exists.
 - KV namespace ID in `wrangler.jsonc` is real.
 - `compatibility_date` is supported by installed Wrangler.
 - Worker secrets are set in Cloudflare for production deploys.
@@ -217,7 +222,10 @@ Send a Linear test webhook and verify:
 
 ### Retry behavior
 
-- Telegram failure in Queue consumer throws, so Cloudflare Queue retries.
+- Queue messages are handled independently: successful messages are acked, failed messages call `message.retry()`.
+- Any consumer error schedules message retry; check Worker logs, Telegram status, and KV failures before manual replay.
+- Telegram failure in Queue consumer schedules message retry, so Cloudflare Queue retries.
+- Messages that keep failing after 5 retries move to `linear-notifications-dlq`.
 - Linear webhook request already returned quickly after enqueue, so Telegram failure does not force Linear duplicate retry.
 - Enqueue failure returns `500`, allowing Linear to retry because job was not accepted.
 
@@ -246,6 +254,7 @@ Logs are intentionally redacted:
 bun test
 bun run typecheck
 bunx wrangler queues create linear-notifications
+bunx wrangler queues create linear-notifications-dlq
 bunx wrangler kv namespace create PROCESSED_DELIVERIES
 bunx wrangler secret put LINEAR_WEBHOOK_SECRET
 bunx wrangler secret put TELEGRAM_BOT_TOKEN

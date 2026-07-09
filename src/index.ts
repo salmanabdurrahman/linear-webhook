@@ -22,6 +22,7 @@ interface Env {
 }
 
 const TIMESTAMP_TOLERANCE_MS = 60_000;
+const MAX_WEBHOOK_BODY_BYTES = 100 * 1024;
 
 export const app = new Elysia({ adapter: CloudflareAdapter })
   .get("/", () => ({
@@ -32,6 +33,10 @@ export const app = new Elysia({ adapter: CloudflareAdapter })
   .compile();
 
 export async function handleLinearWebhook(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
+  if (isWebhookBodyTooLarge(request.headers)) {
+    return new Response("payload too large", { status: 413 });
+  }
+
   const rawBody = await request.text();
   const signature = normalizeSignature(request.headers.get("Linear-Signature"));
   const secret = env.LINEAR_WEBHOOK_SECRET;
@@ -115,11 +120,15 @@ const worker = {
   },
   async queue(batch: MessageBatch<NotificationJob>, env: Env = {}): Promise<void> {
     for (const message of batch.messages) {
-      await deliverNotificationJob(message.body, {
-        botToken: env.TELEGRAM_BOT_TOKEN,
-        chatId: env.TELEGRAM_CHAT_ID,
-      }, env.PROCESSED_DELIVERIES);
-      message.ack();
+      try {
+        await deliverNotificationJob(message.body, {
+          botToken: env.TELEGRAM_BOT_TOKEN,
+          chatId: env.TELEGRAM_CHAT_ID,
+        }, env.PROCESSED_DELIVERIES);
+        message.ack();
+      } catch {
+        message.retry();
+      }
     }
   },
 };
@@ -143,4 +152,15 @@ export function timestampFromHeader(headers: Headers): number | null {
 
   const parsed = Number(timestamp);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function isWebhookBodyTooLarge(headers: Headers): boolean {
+  const contentLength = headers.get("Content-Length");
+
+  if (!contentLength) {
+    return false;
+  }
+
+  const parsed = Number(contentLength);
+  return Number.isFinite(parsed) && parsed > MAX_WEBHOOK_BODY_BYTES;
 }
